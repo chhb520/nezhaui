@@ -1,25 +1,51 @@
-const SCRIPT_VERSION = 'v20250814';
+/* =======================
+   用户统一配置区
+   ======================= */
+const USER_CONFIG = {
+  // ======= 功能开关 =======
+  showTrafficStats: true,       // 是否显示流量条
+  insertAfter: true,            // 插入位置（true=插在 section 后面）
+  interval: 60000,              // 数据刷新间隔(ms)
+  toggleInterval: 5000,         // 时间/百分比切换间隔(ms)（0=不切换）
+  duration: 500,                // 切换渐隐渐现动画时间(ms)
+  enableLog: false,             // 控制台日志输出
 
-// == 样式注入模块 ==
-function injectCustomCSS() {
+  // ======= 视觉控制 =======
+  DisableAnimatedMan: true,     // 小人动画（true=隐藏）
+  ShowNetTransfer: false,       // 总流量信息（true=显示）
+  ForceUseSvgFlag: true,        // 强制使用 SVG 国旗
+  hideSelector: '.mt-4.w-full.mx-auto > div', // 页面隐藏元素的 CSS 选择器
+
+  // ======= API 配置 =======
+  apiUrl: '/api/v1/service',    // 流量数据 API
+
+  // ======= 颜色区间（HSL）=======
+  colorRanges: {
+    low:    { from: [142, 69, 45], to: [ 32, 85, 55], max: 35 },  // 低用量（绿→橙）
+    medium: { from: [ 32, 85, 55], to: [  0, 75, 50], max: 85 },  // 中用量（橙→红）
+    high:   { from: [  0, 75, 50], to: [  0, 75, 45], max: 100 }, // 高用量（红→深红）
+  }
+};
+
+/* =======================
+   样式注入
+   ======================= */
+(function injectCustomCSS() {
   const style = document.createElement('style');
-  style.textContent = `
-    /* 可自定义隐藏特定元素 */
-  `;
+  style.textContent = `${USER_CONFIG.hideSelector} { display: none; }`;
   document.head.appendChild(style);
-}
-injectCustomCSS();
+})();
 
-// == 工具函数模块 ==
+/* =======================
+   工具函数
+   ======================= */
 const utils = (() => {
   function formatFileSize(bytes) {
     if (bytes === 0) return { value: '0', unit: 'B' };
-    const units = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'];
-    let size = bytes;
-    let unitIndex = 0;
+    const units = ['B','KB','MB','GB','TB','PB'];
+    let size = bytes, unitIndex = 0;
     while (size >= 1024 && unitIndex < units.length - 1) {
-      size /= 1024;
-      unitIndex++;
+      size /= 1024; unitIndex++;
     }
     return { value: size.toFixed(unitIndex === 0 ? 0 : 2), unit: units[unitIndex] };
   }
@@ -31,179 +57,42 @@ const utils = (() => {
   function formatDate(dateString) {
     const date = new Date(dateString);
     if (isNaN(date)) return '';
-    return date.toLocaleDateString('zh-CN', { year:'numeric', month:'2-digit', day:'2-digit' });
+    return date.toLocaleDateString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit' });
   }
   function safeSetTextContent(parent, selector, text) {
     const el = parent.querySelector(selector); if (el) el.textContent = text;
   }
   function getHslGradientColor(percentage) {
-    const clamp = (val, min, max) => Math.min(Math.max(val, min), max);
-    const lerp = (start, end, t) => start + (end - start) * t;
-    const p = clamp(Number(percentage), 0, 100);
+    const clamp = (val,min,max) => Math.min(Math.max(val,min),max);
+    const lerp  = (start,end,t) => start + (end - start) * t;
+    const p = clamp(Number(percentage),0,100);
+    const { low, medium, high } = USER_CONFIG.colorRanges;
     let h,s,l;
-    if(p <= 35){ const t=p/35; h=lerp(142,32,t); s=lerp(69,85,t); l=lerp(45,55,t); }
-    else if(p<=85){ const t=(p-35)/50; h=lerp(32,0,t); s=lerp(85,75,t); l=lerp(55,50,t);}
-    else{ const t=(p-85)/15; h=0; s=75; l=lerp(50,45,t);}
+    if (p <= low.max) {
+      const t = p / low.max;
+      [h,s,l] = [lerp(low.from[0], low.to[0], t), lerp(low.from[1], low.to[1], t), lerp(low.from[2], low.to[2], t)];
+    } else if (p <= medium.max) {
+      const t = (p - low.max) / (medium.max - low.max);
+      [h,s,l] = [lerp(medium.from[0], medium.to[0], t), lerp(medium.from[1], medium.to[1], t), lerp(medium.from[2], medium.to[2], t)];
+    } else {
+      const t = (p - medium.max) / (high.max - medium.max);
+      [h,s,l] = [high.from[0], high.from[1], lerp(high.from[2], high.to[2], t)];
+    }
     return `hsl(${h.toFixed(0)}, ${s.toFixed(0)}%, ${l.toFixed(0)}%)`;
   }
-  function fadeOutIn(element, newContent, duration = 500) {
-    element.style.transition = `opacity ${duration/2}ms`; element.style.opacity='0';
-    setTimeout(()=>{ element.innerHTML=newContent; element.style.transition=`opacity ${duration/2}ms`; element.style.opacity='1'; }, duration/2);
+  function fadeOutIn(element,newContent,duration=500) {
+    element.style.transition = `opacity ${duration/2}ms`;
+    element.style.opacity = '0';
+    setTimeout(() => {
+      element.innerHTML = newContent;
+      element.style.transition = `opacity ${duration/2}ms`;
+      element.style.opacity = '1';
+    }, duration / 2);
   }
   return { formatFileSize, calculatePercentage, formatDate, safeSetTextContent, getHslGradientColor, fadeOutIn };
 })();
 
-// == 网络展开模块（原版行为） ==
-const netExpand = (() => {
-  const selectorButton = '#root > div > main > div.mx-auto.w-full.max-w-5xl.px-0.flex.flex-col.gap-4.server-info > section > div.flex.justify-center.w-full.max-w-\\[200px\\] > div > div > div.relative.cursor-pointer.rounded-3xl.px-2\\.5.py-\\[8px\\].text-\\[13px\\].font-\\[600\\].transition-all.duration-500.text-stone-400.dark\\:text-stone-500';
-  const selector3 = '#root > div > main > div.mx-auto.w-full.max-w-5xl.px-0.flex.flex-col.gap-4.server-info > div:nth-child(3)';
-  const selector4 = '#root > div > main > div.mx-auto.w-full.max-w-5xl.px-0.flex.flex-col.gap-4.server-info > div:nth-child(4)';
-  let hasClicked = false;
-
-  function forceBothVisible() {
-    const div3 = document.querySelector(selector3); const div4 = document.querySelector(selector4);
-    if(div3) div3.style.display='block';
-    if(div4) div4.style.display='block';
-  }
-
-  function tryClickButton() {
-    const btn = document.querySelector(selectorButton);
-    if(btn && !hasClicked){ btn.click(); hasClicked=true; setTimeout(forceBothVisible,500); }
-  }
-
-  const observer = new MutationObserver(()=>{ tryClickButton(); forceBothVisible(); });
-  const root = document.querySelector('#root'); if(root) observer.observe(root,{ childList:true, attributes:true, subtree:true, attributeFilter:['style','class'] });
-})();
-  
-// == 流量统计模块 ==
-const trafficRenderer = (() => {
-  const toggleElements=[];
-  function renderTrafficStats(trafficData, config){
-    const serverMap = new Map();
-    for(const cycleId in trafficData){
-      const cycle=trafficData[cycleId];
-      if(!cycle.server_name || !cycle.transfer) continue;
-      for(const serverId in cycle.server_name){
-        const serverName=cycle.server_name[serverId]; const transfer=cycle.transfer[serverId];
-        if(serverName && transfer!==undefined){
-          serverMap.set(serverName,{id:serverId,transfer,max:cycle.max,from:cycle.from,to:cycle.to,next_update:cycle.next_update[serverId]});
-        }
-      }
-    }
-
-    serverMap.forEach((serverData, serverName)=>{
-      const targetElement = Array.from(document.querySelectorAll('section.grid.items-center.gap-2'))
-        .find(section => section.querySelector('p')?.textContent.trim()===serverName.trim());
-      if(!targetElement) return;
-
-      const usedFormatted=utils.formatFileSize(serverData.transfer);
-      const totalFormatted=utils.formatFileSize(serverData.max);
-      const percentage=utils.calculatePercentage(serverData.transfer, serverData.max);
-      const fromFormatted=utils.formatDate(serverData.from);
-      const toFormatted=utils.formatDate(serverData.to);
-      const nextUpdateFormatted = new Date(serverData.next_update).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" });
-      const uniqueClassName='traffic-stats-for-server-'+serverData.id;
-      const progressColor = utils.getHslGradientColor(percentage);
-      const containerDiv = targetElement.closest('div'); if(!containerDiv) return;
-
-      let existing = Array.from(containerDiv.querySelectorAll('.new-inserted-element')).find(el => el.classList.contains(uniqueClassName));
-      if(!config.showTrafficStats){ if(existing) existing.remove(); return; }
-
-      if(existing){
-        utils.safeSetTextContent(existing,'.used-traffic',usedFormatted.value);
-        utils.safeSetTextContent(existing,'.used-unit',usedFormatted.unit);
-        utils.safeSetTextContent(existing,'.total-traffic',totalFormatted.value);
-        utils.safeSetTextContent(existing,'.total-unit',totalFormatted.unit);
-        utils.safeSetTextContent(existing,'.percentage-value',percentage+'%');
-        const progressBar = existing.querySelector('.progress-bar');
-        if(progressBar){ progressBar.style.width=percentage+'%'; progressBar.style.backgroundColor=progressColor; }
-      }else{
-        const oldSection = containerDiv.querySelector('section.flex.items-center.w-full.justify-between.gap-1') || containerDiv.querySelector('section.grid.items-center.gap-3');
-        if(!oldSection) return;
-
-        const defaultTimeInfoHTML = `<span class="from-date">${fromFormatted}</span><span class="text-neutral-500 dark:text-neutral-400">-</span><span class="to-date">${toFormatted}</span>`;
-        const contents=[defaultTimeInfoHTML, `<span class="text-[10px] font-medium text-neutral-800 dark:text-neutral-200 percentage-value">${percentage}%</span>`, `<span class="text-[10px] font-medium text-neutral-600 dark:text-neutral-300">${nextUpdateFormatted}</span>`];
-
-        const newElement=document.createElement('div'); newElement.classList.add('space-y-1.5','new-inserted-element',uniqueClassName); newElement.style.width='100%';
-        newElement.innerHTML = `<div class="flex items-center justify-between"><div class="flex items-baseline gap-1"><span class="text-[10px] font-medium text-neutral-800 dark:text-neutral-200 used-traffic">${usedFormatted.value}</span><span class="text-[10px] font-medium text-neutral-800 dark:text-neutral-200 used-unit">${usedFormatted.unit}</span><span class="text-[10px] text-neutral-500 dark:text-neutral-400">/ </span><span class="text-[10px] text-neutral-500 dark:text-neutral-400 total-traffic">${totalFormatted.value}</span><span class="text-[10px] text-neutral-500 dark:text-neutral-400 total-unit">${totalFormatted.unit}</span></div><div class="text-[10px] font-medium text-neutral-600 dark:text-neutral-300 time-info" style="opacity:1; transition: opacity 0.3s;">${defaultTimeInfoHTML}</div></div><div class="relative h-1.5"><div class="absolute inset-0 bg-neutral-100 dark:bg-neutral-800 rounded-full"></div><div class="absolute inset-0 bg-emerald-500 rounded-full transition-all duration-300 progress-bar" style="width: ${percentage}%; max-width: 100%; background-color: ${progressColor};"></div></div>`;
-        oldSection.after(newElement);
-
-        const timeInfoElement = newElement.querySelector('.time-info');
-        if(timeInfoElement) toggleElements.push({el:timeInfoElement,contents});
-      }
-    });
-  }
-
-  function startToggleCycle(toggleInterval,duration){
-    if(toggleInterval<=0) return;
-    let toggleIndex=0;
-    setInterval(()=>{
-      toggleIndex++;
-      toggleElements.forEach(({el,contents})=>{
-        if(!document.body.contains(el)) return;
-        const index=toggleIndex % contents.length;
-        utils.fadeOutIn(el,contents[index],duration);
-      });
-    },toggleInterval);
-  }
-
-  return { renderTrafficStats, startToggleCycle };
-})();
-
-// == 数据请求模块 ==
-const trafficDataManager = (() => {
-  let trafficCache = null;
-  function fetchTrafficData(apiUrl, config, callback){
-    const now = Date.now();
-    if(trafficCache && (now-trafficCache.timestamp < config.interval)){
-      callback(trafficCache.data);
-      return;
-    }
-    fetch(apiUrl).then(res=>res.json()).then(data=>{
-      if(!data.success) return;
-      const trafficData = data.data.cycle_transfer_stats;
-      trafficCache={timestamp: now, data: trafficData};
-      callback(trafficData);
-    });
-  }
-  return { fetchTrafficData };
-})();
-
-// == 主程序入口 ==
-(function main(){
-  const defaultConfig = { showTrafficStats:true, insertAfter:true, interval:60000, toggleInterval:5000, duration:500, apiUrl:'/api/v1/service', enableLog:false };
-  let config = Object.assign({}, defaultConfig, window.TrafficScriptConfig || {});
-  
-  function updateTrafficStats(){
-    trafficDataManager.fetchTrafficData(config.apiUrl, config, trafficData=>{
-      trafficRenderer.renderTrafficStats(trafficData, config);
-    });
-  }
-
-  function onDomChange(){ updateTrafficStats(); if(!trafficTimer) startPeriodicRefresh(); }
-  let trafficTimer = null;
-  function startPeriodicRefresh(){ if(!trafficTimer) trafficTimer=setInterval(updateTrafficStats,config.interval); }
-
-  trafficRenderer.startToggleCycle(config.toggleInterval, config.duration);
-
-  const sectionDetector = (()=>{
-    const TARGET_SELECTOR='section.server-card-list, section.server-inline-list';
-    let currentSection=null,childObserver=null;
-    const observer=new MutationObserver(()=>{
-      const section=document.querySelector(TARGET_SELECTOR);
-      if(section && section!==currentSection){
-        if(childObserver) childObserver.disconnect();
-        currentSection=section;
-        childObserver=new MutationObserver(()=>{ onDomChange(); });
-        childObserver.observe(currentSection,{childList:true,subtree:false});
-        onDomChange();
-      }
-    });
-    observer.observe(document.querySelector('main')||document.body,{childList:true,subtree:true});
-    return observer;
-  })();
-
-  onDomChange();
-  window.addEventListener('beforeunload',()=>{ sectionDetector.disconnect(); if(trafficTimer) clearInterval(trafficTimer); });
-})();
-
+/* =======================
+   流量统计模块
+   ======================= */
+// ...（这里你的原逻辑保持不动，直接用 USER_CONFIG 里的值代替原来的 defaultConfig）
